@@ -23,8 +23,21 @@ pub struct Document {
     pub title: String,
     pub metadata: DocumentMetadata,
     pub elements: Vec<DocumentElement>,
+    pub comments: Vec<DocComment>,
     #[serde(skip)]
     pub image_options: ImageOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocComment {
+    pub id: usize,
+    pub author: String,
+    pub date: String,
+    pub text: String,
+    pub parent_id: Option<usize>,
+    pub anchor_element_index: Option<usize>,
+    /// Character offset within the anchor element's text where the comment range starts.
+    pub anchor_char_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

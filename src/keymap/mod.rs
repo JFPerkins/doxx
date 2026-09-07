@@ -24,7 +24,22 @@ impl Keymap {
     }
 
     pub fn get_action(&self, key: &KeyBinding) -> Option<Action> {
-        self.bindings.get(key).copied()
+        self.bindings.get(key).copied().or_else(|| {
+            // Terminals differ on whether uppercase characters also carry Shift.
+            if matches!(key.code, crossterm::event::KeyCode::Char(c) if c.is_uppercase())
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+            {
+                let mut normalized = key.clone();
+                normalized
+                    .modifiers
+                    .remove(crossterm::event::KeyModifiers::SHIFT);
+                self.bindings.get(&normalized).copied()
+            } else {
+                None
+            }
+        })
     }
 
     /// Returns all key strings bound to `action`, sorted: plain chars first, then
@@ -87,6 +102,25 @@ mod tests {
         assert_eq!(
             km.get_action(&KeyBinding::char('N')),
             Some(Action::SearchPrevious)
+        );
+    }
+
+    #[test]
+    fn test_comments_shortcut_across_presets() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        for preset in [KeymapPreset::Default, KeymapPreset::Vim, KeymapPreset::Less] {
+            let km = Keymap::from_preset(preset);
+            for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+                assert_eq!(
+                    km.get_action(&KeyBinding::new(KeyCode::Char('C'), modifiers)),
+                    Some(Action::ToggleComments)
+                );
+            }
+            assert_eq!(km.get_action(&KeyBinding::char('c')), Some(Action::Copy));
+        }
+        assert_eq!(
+            "toggle_comments".parse::<Action>().unwrap(),
+            Action::ToggleComments
         );
     }
 

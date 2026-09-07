@@ -31,6 +31,10 @@ struct Cli {
     #[arg(short, long)]
     outline: bool,
 
+    /// Open comments sidebar on launch
+    #[arg(long)]
+    comments: bool,
+
     /// Jump to specific page
     #[arg(short, long)]
     page: Option<usize>,

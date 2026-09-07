@@ -156,6 +156,7 @@ fn create_test_document() -> Document {
                 formatting: TextFormatting::default(),
             }],
         }],
+        comments: vec![],
         image_options: Default::default(),
     }
 }
@@ -214,6 +215,7 @@ fn create_formatted_document() -> Document {
                 },
             ],
         }],
+        comments: vec![],
         image_options: Default::default(),
     }
 }
@@ -254,6 +256,7 @@ fn create_colored_document() -> Document {
                 },
             ],
         }],
+        comments: vec![],
         image_options: Default::default(),
     }
 }
@@ -310,6 +313,7 @@ fn create_list_document() -> Document {
                 ordered: false,
             },
         ],
+        comments: vec![],
         image_options: Default::default(),
     }
 }
@@ -370,6 +374,7 @@ fn create_table_document() -> Document {
             author: None,
         },
         elements: vec![DocumentElement::Table { table }],
+        comments: vec![],
         image_options: Default::default(),
     }
 }

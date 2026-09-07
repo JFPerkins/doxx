@@ -52,6 +52,7 @@ fn create_default() -> HashMap<KeyBinding, Action> {
 
     // View switching
     m.insert(KeyBinding::char('o'), Action::ToggleOutline);
+    m.insert(KeyBinding::char('C'), Action::ToggleComments);
     m.insert(KeyBinding::char('s'), Action::EnterSearch);
     m.insert(KeyBinding::char('S'), Action::ToggleSearchState);
     m.insert(KeyBinding::char('h'), Action::ToggleHelp);

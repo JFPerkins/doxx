@@ -14,6 +14,7 @@ pub enum Action {
 
     // View switching
     ToggleOutline,
+    ToggleComments,
     EnterSearch,
     ToggleHelp,
     ToggleSearchState,
@@ -49,6 +50,7 @@ impl FromStr for Action {
             "goto_start" => Ok(Action::GotoStart),
             "goto_end" => Ok(Action::GotoEnd),
             "toggle_outline" => Ok(Action::ToggleOutline),
+            "toggle_comments" => Ok(Action::ToggleComments),
             "search" => Ok(Action::EnterSearch),
             "toggle_help" => Ok(Action::ToggleHelp),
             "toggle_search_state" => Ok(Action::ToggleSearchState),

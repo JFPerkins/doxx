@@ -19,6 +19,8 @@ use super::parsing::numbering::{
 };
 // Import list processing
 use super::parsing::list::group_list_items;
+// Import comment text extraction
+use super::parsing::comment::extract_comment_text;
 // Import formatting and text extraction
 use super::parsing::formatting::{extract_paragraph_text, extract_run_formatting};
 // Import heading detection
@@ -61,6 +63,11 @@ pub fn load_document(file_path: &Path, image_options: ImageOptions) -> Result<Do
     let mut word_count = 0;
     let mut numbering_resolver = NumberingResolver::build_from_docx(&docx.numberings);
     let mut heading_tracker = HeadingNumberTracker::new();
+    // Maps comment id -> (element_index, char_offset) recorded at the CommentStart.
+    // Note: element indices are pre-equation-integration so may be approximate in
+    // documents with display equations.
+    let mut comment_anchors: std::collections::HashMap<usize, (usize, usize)> =
+        std::collections::HashMap::new();
 
     // Analyze document structure to determine if auto-numbering should be enabled
     let should_auto_number = analyze_heading_structure(&docx.document);
@@ -86,6 +93,27 @@ pub fn load_document(file_path: &Path, image_options: ImageOptions) -> Result<Do
 
                 // Check for list numbering properties (Word's automatic lists)
                 let list_info = detect_list_from_paragraph_numbering(para);
+
+                // Collect comment anchor IDs and their char offsets within the paragraph.
+                // Walk children in order, accumulating run text length so that when a
+                // CommentStart is encountered we know how many chars precede it.
+                let mut para_comment_ids: Vec<(usize, usize)> = Vec::new(); // (id, char_offset)
+                let mut running_chars: usize = 0;
+                for child in &para.children {
+                    match child {
+                        docx_rs::ParagraphChild::Run(run) => {
+                            for run_child in &run.children {
+                                if let docx_rs::RunChild::Text(t) = run_child {
+                                    running_chars += t.text.chars().count();
+                                }
+                            }
+                        }
+                        docx_rs::ParagraphChild::CommentStart(c) => {
+                            para_comment_ids.push((c.id, running_chars));
+                        }
+                        _ => {}
+                    }
+                }
 
                 // Check for images in this paragraph first
                 for child in &para.children {
@@ -188,6 +216,14 @@ pub fn load_document(file_path: &Path, image_options: ImageOptions) -> Result<Do
 
                 if !total_text.trim().is_empty() {
                     word_count += total_text.split_whitespace().count();
+
+                    // Record comment anchors before the element push so the stored
+                    // index equals the element's final position in `elements`.
+                    for &(id, char_offset) in &para_comment_ids {
+                        comment_anchors
+                            .entry(id)
+                            .or_insert((elements.len(), char_offset));
+                    }
 
                     // Priority: code block > list numbering > heading style > text heuristics
                     if is_code_block {
@@ -421,10 +457,31 @@ pub fn load_document(file_path: &Path, image_options: ImageOptions) -> Result<Do
         author: None,
     };
 
+    // Build DocComment list from docx.comments (populated by docx_rs from
+    // word/comments.xml) combined with the anchor positions recorded above.
+    let comments: Vec<DocComment> = docx
+        .comments
+        .inner()
+        .iter()
+        .map(|c| {
+            let text = extract_comment_text(c);
+            DocComment {
+                id: c.id,
+                author: c.author.clone(),
+                date: c.date.clone(),
+                text,
+                parent_id: c.parent_comment_id,
+                anchor_element_index: comment_anchors.get(&c.id).map(|&(idx, _)| idx),
+                anchor_char_offset: comment_anchors.get(&c.id).map(|&(_, off)| off),
+            }
+        })
+        .collect();
+
     Ok(Document {
         title,
         metadata,
         elements,
+        comments,
         image_options,
     })
 }

@@ -58,6 +58,7 @@ A fast, terminal-native document viewer for Word files. View, search, and export
 - **Equation support** — LaTeX rendering for inline and display equations 📐
 - **Fast search** with highlighting 🔍
 - **Smart tables** with proper alignment and Unicode borders
+- **Comment sidebar** — view document comments alongside the text 💬
 - **Copy to clipboard** — grab content directly from the terminal
 - **Export formats** — Markdown, CSV, JSON, plain text, ANSI-colored output
 - **Terminal images** for Kitty, iTerm2, WezTerm 🖼️
@@ -203,6 +204,7 @@ doxx [OPTIONS] <FILE>
 | `-o, --outline` | Start with outline view for quick navigation |
 | `-p, --page <PAGE>` | Jump to specific page number on startup |
 | `-s, --search <TERM>` | Search and highlight term immediately |
+| `--comments` | Open comments sidebar on launch |
 | `--force-ui` | Force interactive UI mode (bypass TTY detection) |
 | `--color` | Enable color support for text rendering |
 
@@ -274,6 +276,7 @@ doxx slides.docx --extract-images ./images/        # Save images to folder
 | `↓`/`j` | Scroll down |
 | `o` | Toggle outline |
 | `s` | Search |
+| `C` (Shift+C) | Toggle comments sidebar |
 | `c` | Copy to clipboard |
 | `h` | Help |
 | `q` | Quit |

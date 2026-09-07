@@ -9,6 +9,8 @@ use ratatui_image::{protocol::StatefulProtocol, StatefulImage};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use std::collections::HashMap;
+
 use super::LayoutCache;
 use crate::document::*;
 
@@ -38,6 +40,10 @@ pub struct DocumentWidget<'a> {
     color_enabled: bool,
     search_results: &'a [SearchResult],
     current_search_index: usize,
+    /// Maps element_index -> char_offset of the CommentRangeStart within that element.
+    comment_anchors: Option<&'a HashMap<usize, usize>>,
+    /// Width reserved on the right for the comment icon column (0 if no comments).
+    comment_margin: u16,
 }
 
 impl<'a> DocumentWidget<'a> {
@@ -49,6 +55,8 @@ impl<'a> DocumentWidget<'a> {
             color_enabled: false,
             search_results: &[],
             current_search_index: 0,
+            comment_anchors: None,
+            comment_margin: 0,
         }
     }
 
@@ -73,6 +81,15 @@ impl<'a> DocumentWidget<'a> {
     /// Set the current search result index for highlighting
     pub fn current_search_index(mut self, index: usize) -> Self {
         self.current_search_index = index;
+        self
+    }
+
+    /// Set the comment anchor map and margin width.
+    /// `anchors` maps element_index to the char offset of the CommentRangeStart.
+    /// `margin` should be 2 when any comments exist, 0 otherwise.
+    pub fn comment_anchors(mut self, anchors: &'a HashMap<usize, usize>, margin: u16) -> Self {
+        self.comment_anchors = Some(anchors);
+        self.comment_margin = margin;
         self
     }
 
@@ -173,6 +190,39 @@ impl<'a> DocumentWidget<'a> {
         }
 
         lines
+    }
+
+    /// Return the 0-based wrapped line index that contains the given char offset.
+    /// Uses the same wrapping logic as `wrap_formatted_runs` but only tracks
+    /// character counts, not styles. Returns the last line index if the offset
+    /// exceeds the total text length.
+    fn char_offset_to_line_index(
+        runs: &[FormattedRun],
+        max_width: usize,
+        char_offset: usize,
+    ) -> usize {
+        if max_width == 0 {
+            return 0;
+        }
+        let mut line_index = 0;
+        let mut current_width = 0;
+        let mut chars_seen = 0;
+
+        for run in runs {
+            for grapheme in run.text.graphemes(true) {
+                if chars_seen >= char_offset {
+                    return line_index;
+                }
+                let g_width = grapheme.width();
+                if current_width + g_width > max_width && current_width > 0 {
+                    line_index += 1;
+                    current_width = 0;
+                }
+                current_width += g_width;
+                chars_seen += grapheme.chars().count();
+            }
+        }
+        line_index
     }
 
     /// Render a heading element at the current position
@@ -637,11 +687,22 @@ impl<'a> DocumentWidget<'a> {
         frame: &mut Frame,
         image_protocols: &mut [StatefulProtocol],
         layout_cache: &mut LayoutCache,
-    ) {
+    ) -> std::collections::HashSet<usize> {
         let buf = frame.buffer_mut();
 
         // Check if terminal width changed and invalidate cache if needed
         layout_cache.check_width(area.width);
+
+        // Persistent comment margin: all elements use the same narrowed area so
+        // wrapping is consistent across the whole document.
+        let render_area = if self.comment_margin > 0 {
+            Rect {
+                width: area.width.saturating_sub(self.comment_margin),
+                ..area
+            }
+        } else {
+            area
+        };
 
         // Start rendering from the top of the area
         let mut current_y = area.y;
@@ -652,6 +713,11 @@ impl<'a> DocumentWidget<'a> {
         // Track image positions and protocol indices for rendering
         let mut images_to_render: Vec<(u16, usize)> = Vec::new(); // (y_position, protocol_index)
         let mut protocol_idx = 0;
+
+        // Track the actual rendered element range to return to the caller.
+        // Track elements whose comment marker was actually drawn.
+        let mut marked_elements: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
 
         // Render each visible element
         for (element_index, element) in visible_elements {
@@ -673,6 +739,12 @@ impl<'a> DocumentWidget<'a> {
                 && self.current_search_index < self.search_results.len()
                 && self.search_results[self.current_search_index].element_index == element_index;
 
+            let anchor_char_offset = self
+                .comment_anchors
+                .and_then(|a| a.get(&element_index).copied());
+
+            let y_before = current_y;
+
             match element {
                 DocumentElement::Heading {
                     level,
@@ -683,7 +755,7 @@ impl<'a> DocumentWidget<'a> {
                         text,
                         *level,
                         number.as_deref(),
-                        area,
+                        render_area,
                         buf,
                         &mut current_y,
                         self.color_enabled,
@@ -698,7 +770,7 @@ impl<'a> DocumentWidget<'a> {
                         element_index,
                         layout_cache,
                     };
-                    Self::render_paragraph(runs, area, buf, &mut current_y, &mut ctx);
+                    Self::render_paragraph(runs, render_area, buf, &mut current_y, &mut ctx);
                 }
 
                 DocumentElement::List { items, ordered } => {
@@ -709,11 +781,11 @@ impl<'a> DocumentWidget<'a> {
                         element_index,
                         layout_cache,
                     };
-                    Self::render_list(items, *ordered, area, buf, &mut current_y, &mut ctx);
+                    Self::render_list(items, *ordered, render_area, buf, &mut current_y, &mut ctx);
                 }
 
                 DocumentElement::Table { table } => {
-                    Self::render_table(table, area, buf, &mut current_y, self.color_enabled);
+                    Self::render_table(table, render_area, buf, &mut current_y, self.color_enabled);
                 }
 
                 DocumentElement::Image {
@@ -730,7 +802,7 @@ impl<'a> DocumentWidget<'a> {
                         // Reserve space for the image
                         Self::render_image_placeholder(
                             description,
-                            area,
+                            render_area,
                             buf,
                             &mut current_y,
                             self.color_enabled,
@@ -746,7 +818,7 @@ impl<'a> DocumentWidget<'a> {
                             " [Image not extracted]"
                         };
                         let desc_text = format!("🖼️  {description}{status}");
-                        buf.set_string(area.x, current_y, &desc_text, Style::default());
+                        buf.set_string(render_area.x, current_y, &desc_text, Style::default());
                         current_y += 2;
                     }
                 }
@@ -777,7 +849,7 @@ impl<'a> DocumentWidget<'a> {
                         Span::styled(latex, latex_style),
                     ]);
 
-                    buf.set_line(area.x, current_y, &line, area.width);
+                    buf.set_line(render_area.x, current_y, &line, render_area.width);
                     current_y += 2; // Equation + blank line
                 }
 
@@ -804,7 +876,36 @@ impl<'a> DocumentWidget<'a> {
                 }
 
                 DocumentElement::PageBreak => {
-                    Self::render_page_break(area, buf, &mut current_y, self.color_enabled);
+                    Self::render_page_break(render_area, buf, &mut current_y, self.color_enabled);
+                }
+            }
+
+            // Draw a comment icon only when the anchor line is within the viewport.
+            // Record marked elements so the sidebar highlights exactly the same set.
+            if let Some(char_offset) = anchor_char_offset {
+                if self.comment_margin > 0 && current_y > y_before {
+                    let anchor_line_idx = match element {
+                        DocumentElement::Paragraph { runs } => Self::char_offset_to_line_index(
+                            runs,
+                            render_area.width as usize,
+                            char_offset,
+                        ),
+                        _ => 0,
+                    };
+                    let anchor_y = y_before + anchor_line_idx as u16;
+
+                    if anchor_y < area.y + area.height {
+                        let icon_x = render_area.x + render_area.width + 1;
+                        buf.set_string(
+                            icon_x,
+                            anchor_y,
+                            "●",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                        marked_elements.insert(element_index);
+                    }
                 }
             }
         }
@@ -826,6 +927,8 @@ impl<'a> DocumentWidget<'a> {
                 }
             }
         }
+
+        marked_elements
     }
 }
 

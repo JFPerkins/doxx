@@ -12,6 +12,7 @@ use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
@@ -48,6 +49,7 @@ pub struct App {
     pub image_picker: Option<Picker>,
     pub image_protocols: ImageProtocols,
     pub layout_cache: LayoutCache,
+    pub show_comments: bool,
     pub keymap: Keymap,
 }
 
@@ -104,6 +106,7 @@ impl App {
             keymap: config.build_keymap(),
             image_protocols: Vec::new(),
             layout_cache: LayoutCache::new(),
+            show_comments: cli.comments,
         };
 
         // Restore search results if we had a saved search
@@ -589,6 +592,7 @@ fn handle_action(app: &mut App, action: Action) -> bool {
             app.scroll_offset = app.document.elements.len().saturating_sub(1);
         }
         Action::ToggleOutline => app.current_view = ViewMode::Outline,
+        Action::ToggleComments => app.show_comments = !app.show_comments,
         Action::EnterSearch => app.current_view = ViewMode::Search,
         Action::ToggleHelp => app.show_help = !app.show_help,
         Action::ToggleSearchState => app.toggle_search_state(),
@@ -649,24 +653,75 @@ fn ui(f: &mut Frame, app: &mut App) {
 }
 
 fn render_document(f: &mut Frame, area: Rect, app: &mut App) {
+    // Compute 1-based hierarchical display labels for each comment.
+    // Root comments get "1", "2", etc. Replies get "1.1", "1.2", "2.1", etc.
+    let mut display_indices: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
+    let mut root_counter: usize = 0;
+    let mut reply_counters: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for c in &app.document.comments {
+        if let Some(parent_id) = c.parent_id {
+            let reply_num = reply_counters.entry(parent_id).or_insert(0);
+            *reply_num += 1;
+            let parent_label = display_indices
+                .get(&parent_id)
+                .cloned()
+                .unwrap_or_else(|| parent_id.to_string());
+            display_indices.insert(c.id, format!("{}.{}", parent_label, reply_num));
+        } else {
+            root_counter += 1;
+            display_indices.insert(c.id, root_counter.to_string());
+        }
+    }
+
+    // Build element_index -> char_offset map for the widget.
+    // entry().or_insert() ensures root comments (inserted first) win when multiple
+    // comments share the same anchor element.
+    let mut comment_anchor_map: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for c in &app.document.comments {
+        if let (Some(idx), Some(off)) = (c.anchor_element_index, c.anchor_char_offset) {
+            comment_anchor_map.entry(idx).or_insert(off);
+        }
+    }
+    let comment_margin: u16 = if !app.document.comments.is_empty() {
+        2
+    } else {
+        0
+    };
+
+    // Split area horizontally when the comments sidebar is toggled on.
+    let show_sidebar = app.show_comments && !app.document.comments.is_empty();
+    let (doc_area, sidebar_area) = if show_sidebar {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
     let title = format!("📄 doxx - {}", app.document.title);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Blue));
 
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = block.inner(doc_area);
+    f.render_widget(block, doc_area);
 
-    // Use DocumentWidget for unified rendering with proper text wrapping + images
     let mut doc_widget = DocumentWidget::new(&app.document.elements[..])
         .scroll_offset(app.scroll_offset)
         .color_enabled(app.color_enabled)
         .search_results(&app.search_results[..])
-        .current_search_index(app.current_search_index);
+        .current_search_index(app.current_search_index)
+        .comment_anchors(&comment_anchor_map, comment_margin);
 
-    // Render the document content (text + images in single pass)
-    doc_widget.render(inner, f, &mut app.image_protocols, &mut app.layout_cache);
+    let marked_elements =
+        doc_widget.render(inner, f, &mut app.image_protocols, &mut app.layout_cache);
+
     let scrollbar = Scrollbar::default()
         .orientation(ScrollbarOrientation::VerticalRight)
         .begin_symbol(Some("↑"))
@@ -678,12 +733,139 @@ fn render_document(f: &mut Frame, area: Rect, app: &mut App) {
 
     f.render_stateful_widget(
         scrollbar,
-        area.inner(Margin {
+        doc_area.inner(Margin {
             vertical: 1,
             horizontal: 0,
         }),
         &mut scrollbar_state,
     );
+
+    if let Some(sidebar) = sidebar_area {
+        render_comments_sidebar(f, sidebar, app, &display_indices, &marked_elements);
+    }
+}
+
+/// Walk parent_id links to find the root comment ID of any comment in a thread.
+fn thread_root_id(comments: &[DocComment], comment_id: usize) -> usize {
+    match comments
+        .iter()
+        .find(|c| c.id == comment_id)
+        .and_then(|c| c.parent_id)
+    {
+        Some(parent_id) => thread_root_id(comments, parent_id),
+        None => comment_id,
+    }
+}
+
+fn render_comments_sidebar(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    display_indices: &std::collections::HashMap<usize, String>,
+    marked_elements: &std::collections::HashSet<usize>,
+) {
+    let comment_count = app.document.comments.len();
+    let block = Block::default()
+        .title(format!("💬 Comments ({})", comment_count))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.document.comments.is_empty() {
+        f.render_widget(
+            Paragraph::new("No comments").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    }
+
+    // Collect root comment IDs whose anchor element had a marker drawn.
+    let visible_root_ids: std::collections::HashSet<usize> = app
+        .document
+        .comments
+        .iter()
+        .filter(|c| c.parent_id.is_none())
+        .filter(|c| {
+            c.anchor_element_index
+                .is_some_and(|idx| marked_elements.contains(&idx))
+        })
+        .map(|c| c.id)
+        .collect();
+
+    // A comment is highlighted when any member of its thread has a visible anchor.
+    let is_highlighted = |c: &DocComment| -> bool {
+        visible_root_ids.contains(&thread_root_id(&app.document.comments, c.id))
+    };
+
+    // Auto-scroll the sidebar to the first highlighted comment.
+    let active_idx = app
+        .document
+        .comments
+        .iter()
+        .enumerate()
+        .find(|(_, c)| is_highlighted(c))
+        .map(|(i, _)| i);
+
+    let sidebar_text_width = inner.width.saturating_sub(1) as usize;
+
+    let items: Vec<ListItem> = app
+        .document
+        .comments
+        .iter()
+        .map(|comment| {
+            let highlighted = is_highlighted(comment);
+            let date = comment.date.split('T').next().unwrap_or(&comment.date);
+            let is_reply = comment.parent_id.is_some();
+            let header_prefix = if is_reply { "  ↳ " } else { "" };
+            let text_indent = if is_reply { "    " } else { "" };
+            let label = display_indices
+                .get(&comment.id)
+                .map(|s| s.as_str())
+                .unwrap_or("?");
+            let header = format!("{}[{}] {}  {}", header_prefix, label, comment.author, date);
+
+            let effective_width = sidebar_text_width.saturating_sub(text_indent.len());
+            let max_chars = effective_width * 2;
+            let text = if comment.text.chars().count() > max_chars {
+                format!(
+                    "{}…",
+                    comment.text.chars().take(max_chars).collect::<String>()
+                )
+            } else {
+                comment.text.clone()
+            };
+
+            let (header_style, text_style) = if highlighted {
+                (
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default(),
+                )
+            } else {
+                (
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+
+            ListItem::new(vec![
+                Line::from(Span::styled(header, header_style)),
+                Line::from(vec![Span::raw(text_indent), Span::styled(text, text_style)]),
+                Line::from(""),
+            ])
+        })
+        .collect();
+
+    let mut sidebar_state = ListState::default();
+    if let Some(idx) = active_idx {
+        sidebar_state.select(Some(idx));
+    }
+    f.render_stateful_widget(List::new(items), inner, &mut sidebar_state);
 }
 
 fn render_outline(f: &mut Frame, area: Rect, app: &mut App) {
@@ -825,6 +1007,7 @@ fn render_help(f: &mut Frame, area: Rect, keymap: &Keymap) {
     lines.push("Other:".to_string());
     let other_actions: &[(Action, &str)] = &[
         (Action::ToggleOutline, "Show outline"),
+        (Action::ToggleComments, "Toggle comments sidebar"),
         (Action::Copy, "Copy content to clipboard"),
         (Action::ToggleHelp, "Toggle help"),
         (Action::Quit, "Quit"),
@@ -883,12 +1066,18 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         String::new()
     };
 
+    let comment_info = if !app.document.comments.is_empty() {
+        format!(" • 💬 {}", app.document.comments.len())
+    } else {
+        String::new()
+    };
+
     let status_text = if let Some(status_msg) = &app.status_message {
         // Show status message (like copy confirmation) with higher priority
         status_msg.clone()
     } else {
         format!(
-            "{} • 📄 {} • {} pages • {} words • {}/{}{}",
+            "{} • 📄 {} • {} pages • {} words • {}/{}{}{}",
             view_indicator,
             metadata
                 .file_path
@@ -899,6 +1088,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
             metadata.word_count,
             app.scroll_offset + 1,
             app.document.elements.len(),
+            comment_info,
             search_info
         )
     };
@@ -922,9 +1112,10 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
     // Navigation help (keys pulled from active keymap)
     let km = &app.keymap;
     let help_text = format!(
-        "[↕] Scroll [{}] Outline [{}] Search [{}] Copy [{}] Help [{}] Quit",
+        "[↕] Scroll [{}] Outline [{}] Search [{}] Comments [{}] Copy [{}] Help [{}] Quit",
         km.primary_key_for_action(Action::ToggleOutline),
         km.primary_key_for_action(Action::EnterSearch),
+        km.primary_key_for_action(Action::ToggleComments),
         km.primary_key_for_action(Action::Copy),
         km.primary_key_for_action(Action::ToggleHelp),
         km.primary_key_for_action(Action::Quit),

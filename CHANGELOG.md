@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Document comments sidebar with `--comments`, Shift+C, and configurable `toggle_comments` shortcuts.
+
 ## [0.1.4] - 2026-05-26
 
 ### Added
