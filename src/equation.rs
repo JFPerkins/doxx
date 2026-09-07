@@ -63,7 +63,7 @@ impl Equation {
 /// Extract plain text from OMML (for fallback display)
 fn extract_text_from_omml(omml: &str) -> String {
     let mut reader = Reader::from_str(omml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
 
     let mut text = String::new();
     let mut buf = Vec::new();
@@ -72,8 +72,8 @@ fn extract_text_from_omml(omml: &str) -> String {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"m:t" => {
                 // Inside <m:t> tag, capture text
-                if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                    text.push_str(&e.unescape().unwrap_or_default());
+                if let Ok(content) = read_math_text(&mut reader) {
+                    text.push_str(&content);
                 }
             }
             Ok(Event::Eof) => break,
@@ -98,7 +98,7 @@ fn parse_omml_to_unicode(omml: &str) -> Result<String> {
 /// Parse OMML XML into structured elements
 fn parse_omml_element(xml: &str) -> Result<OmmlElement> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
 
     let mut buf = Vec::new();
     let mut elements = Vec::new();
@@ -352,9 +352,7 @@ fn parse_run(reader: &mut Reader<&[u8]>) -> Result<OmmlElement> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) if e.name().as_ref() == b"m:t" => {
-                if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                    text.push_str(&e.unescape().unwrap_or_default());
-                }
+                text.push_str(&read_math_text(reader)?);
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"m:r" => break,
             Ok(Event::Eof) => break,
@@ -367,48 +365,37 @@ fn parse_run(reader: &mut Reader<&[u8]>) -> Result<OmmlElement> {
     Ok(OmmlElement::Text(text))
 }
 
-/// Read content of an XML element as a string
+/// Read a complete math text node, including split XML entity references.
+fn read_math_text(reader: &mut Reader<&[u8]>) -> Result<String> {
+    let text = reader.read_text(quick_xml::name::QName(b"m:t"))?;
+    let decoded = text.xml10_content()?;
+    Ok(quick_xml::escape::unescape(&decoded)?.into_owned())
+}
+
+/// Read content of an XML element without decoding entities before it is reparsed.
 fn read_element_content(reader: &mut Reader<&[u8]>, end_tag: &str) -> Result<String> {
-    let mut content = String::new();
+    let mut writer = quick_xml::Writer::new(Vec::new());
     let mut buf = Vec::new();
     let mut depth = 1;
-    let end_tag_bytes = end_tag.as_bytes();
 
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                content.push('<');
-                content.push_str(std::str::from_utf8(e.name().as_ref()).unwrap_or(""));
-                for a in e.attributes().flatten() {
-                    content.push(' ');
-                    content.push_str(std::str::from_utf8(a.key.as_ref()).unwrap_or(""));
-                    content.push_str("=\"");
-                    content.push_str(&String::from_utf8_lossy(&a.value));
-                    content.push('"');
-                }
-                content.push('>');
-                depth += 1;
-            }
-            Ok(Event::End(ref e)) => {
+        let event = reader.read_event_into(&mut buf)?;
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(e) => {
                 depth -= 1;
-                if depth == 0 && e.name().as_ref() == end_tag_bytes {
+                if depth == 0 && e.name().as_ref() == end_tag.as_bytes() {
                     break;
                 }
-                content.push_str("</");
-                content.push_str(std::str::from_utf8(e.name().as_ref()).unwrap_or(""));
-                content.push('>');
             }
-            Ok(Event::Text(ref e)) => {
-                content.push_str(&e.unescape().unwrap_or_default());
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => anyhow::bail!("Element content read error: {}", e),
+            Event::Eof => break,
             _ => {}
         }
+        writer.write_event(event)?;
         buf.clear();
     }
 
-    Ok(content)
+    Ok(String::from_utf8(writer.into_inner())?)
 }
 
 /// Render parsed OMML element to Unicode string
@@ -546,6 +533,21 @@ mod tests {
         assert_eq!(to_subscript("0"), "₀");
         assert_eq!(to_subscript("k"), "ₖ");
         assert_eq!(to_subscript("n-k"), "ₙ₋ₖ");
+    }
+
+    #[test]
+    fn test_entity_references_in_math_text() {
+        let omml = "<m:r><m:t>x &lt; y &amp; &#x3B1; &#62; z</m:t></m:r>";
+        let equation = Equation::from_omml(omml.to_string()).unwrap();
+        assert_eq!(equation.unicode, "x < y & α > z");
+        assert_eq!(equation.fallback, "x < y & α > z");
+    }
+
+    #[test]
+    fn test_nested_math_preserves_entities_for_reparsing() {
+        let xml = "<m:f><m:num><m:r><m:t>x &lt; y &amp; &#x3B1;</m:t></m:r></m:num><m:den><m:r><m:t>2</m:t></m:r></m:den></m:f>";
+        let equation = Equation::from_omml(xml.to_string()).unwrap();
+        assert_eq!(equation.unicode, "(x < y & α⁄2)");
     }
 
     #[test]

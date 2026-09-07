@@ -172,6 +172,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_supported_image_codecs_decode() {
+        use image::{DynamicImage, ImageFormat as Codec};
+        use std::io::Cursor;
+
+        let image = DynamicImage::new_rgb8(2, 2);
+        for format in [Codec::Png, Codec::Jpeg, Codec::Gif, Codec::Bmp, Codec::Tiff] {
+            let mut encoded = Cursor::new(Vec::new());
+            image.write_to(&mut encoded, format).unwrap();
+            let decoded = image::load_from_memory(encoded.get_ref()).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (2, 2), "{format:?}");
+        }
+    }
+
+    #[test]
     fn test_image_format_detection() {
         assert!(matches!(
             ImageFormat::from_filename("image.png"),

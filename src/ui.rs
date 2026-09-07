@@ -140,17 +140,17 @@ impl App {
     }
 
     fn init_image_support(&mut self) {
-        // Try to initialize picker from terminal query on Unix, use font size on Windows
+        // Query terminal capabilities on Unix, with half-block rendering as fallback.
         #[cfg(unix)]
         let picker = if let Ok(p) = Picker::from_query_stdio() {
             p
         } else {
-            // Fallback to manual font size
-            Picker::from_fontsize((8, 16))
+            // Fall back when terminal capabilities cannot be queried.
+            Picker::halfblocks()
         };
 
         #[cfg(not(unix))]
-        let picker = Picker::from_fontsize((8, 16));
+        let picker = Picker::halfblocks();
 
         // Process all images in the document
         for element in &self.document.elements {
@@ -488,7 +488,10 @@ pub async fn run_viewer(document: Document, cli: &Cli, config: &Config) -> Resul
     Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     loop {
         terminal.draw(|f| ui(f, app))?;
 
@@ -632,7 +635,7 @@ fn handle_action(app: &mut App, action: Action) -> bool {
 fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(f.area());
 
     // Main content area
@@ -896,7 +899,7 @@ fn render_outline(f: &mut Frame, area: Rect, app: &mut App) {
 fn render_search(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
     // Search input

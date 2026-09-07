@@ -31,8 +31,6 @@ pub(crate) enum ParagraphContent {
 pub(crate) fn extract_inline_equation_positions(
     file_path: &Path,
 ) -> Result<std::collections::HashMap<usize, Vec<ParagraphContent>>> {
-    use quick_xml::events::Event;
-    use quick_xml::Reader;
     use std::fs::File;
     use std::io::Read;
     use zip::ZipArchive;
@@ -45,9 +43,18 @@ pub(crate) fn extract_inline_equation_positions(
     let mut xml_file = archive.by_name("word/document.xml")?;
     xml_file.read_to_string(&mut document_xml)?;
 
+    parse_inline_equation_xml(&document_xml)
+}
+
+fn parse_inline_equation_xml(
+    document_xml: &str,
+) -> Result<std::collections::HashMap<usize, Vec<ParagraphContent>>> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
     let mut paragraphs: std::collections::HashMap<usize, Vec<ParagraphContent>> =
         std::collections::HashMap::new();
-    let mut reader = Reader::from_str(&document_xml);
+    let mut reader = Reader::from_str(document_xml);
     reader.config_mut().trim_text(false); // Don't trim to preserve spacing
 
     let mut buf = Vec::new();
@@ -104,7 +111,10 @@ pub(crate) fn extract_inline_equation_positions(
                 }
             }
             Ok(Event::Text(ref e)) if in_text_run => {
-                current_text.push_str(&e.unescape().unwrap_or_default());
+                current_text.push_str(&e.xml10_content().unwrap_or_default());
+            }
+            Ok(Event::GeneralRef(ref e)) if in_text_run => {
+                current_text.push_str(&decode_reference(e));
             }
             // Capture OMML content for inline equations
             Ok(Event::Start(ref e)) if in_math => {
@@ -147,7 +157,10 @@ pub(crate) fn extract_inline_equation_positions(
                 current_omml.push_str("/>");
             }
             Ok(Event::Text(ref e)) if in_math => {
-                current_omml.push_str(&e.unescape().unwrap_or_default());
+                current_omml.push_str(&e.xml10_content().unwrap_or_default());
+            }
+            Ok(Event::GeneralRef(ref e)) if in_math => {
+                current_omml.push_str(&decode_reference(e));
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -165,8 +178,6 @@ pub(crate) fn extract_inline_equation_positions(
 /// Extract equations from .docx file by reading raw XML
 /// Since docx-rs doesn't expose OMML (Office Math Markup Language), we parse the ZIP directly
 pub(crate) fn extract_equations_from_docx(file_path: &Path) -> Result<Vec<EquationInfo>> {
-    use quick_xml::events::Event;
-    use quick_xml::Reader;
     use std::fs::File;
     use std::io::Read;
     use zip::ZipArchive;
@@ -179,9 +190,17 @@ pub(crate) fn extract_equations_from_docx(file_path: &Path) -> Result<Vec<Equati
     let mut xml_file = archive.by_name("word/document.xml")?;
     xml_file.read_to_string(&mut document_xml)?;
 
+    parse_equation_xml(&document_xml)
+}
+
+fn parse_equation_xml(document_xml: &str) -> Result<Vec<EquationInfo>> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
     let mut equations = Vec::new();
-    let mut reader = Reader::from_str(&document_xml);
-    reader.config_mut().trim_text(true);
+    let mut reader = Reader::from_str(document_xml);
+    // Entity references split text events; retain whitespace between those events.
+    reader.config_mut().trim_text(false);
 
     let mut buf = Vec::new();
     let mut in_math = false;
@@ -266,7 +285,10 @@ pub(crate) fn extract_equations_from_docx(file_path: &Path) -> Result<Vec<Equati
                 current_omml.push_str("/>");
             }
             Ok(Event::Text(ref e)) if in_math => {
-                current_omml.push_str(&e.unescape().unwrap_or_default());
+                current_omml.push_str(&e.xml10_content().unwrap_or_default());
+            }
+            Ok(Event::GeneralRef(ref e)) if in_math => {
+                current_omml.push_str(&decode_reference(e));
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -618,4 +640,50 @@ fn extract_text(omml: &str, tag: &str) -> Option<String> {
         }
     }
     None
+}
+
+// Decode only predefined and numeric XML references, matching the former unescape API.
+fn decode_reference(reference: &quick_xml::events::BytesRef<'_>) -> String {
+    let entity = format!("&{};", reference.decode().unwrap_or_default());
+    quick_xml::escape::unescape(&entity)
+        .unwrap_or_default()
+        .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENTITY_DOCUMENT: &str = r#"<w:document><w:body><w:p>
+<w:r><w:t>before &amp; &#60; &#x3B1; after </w:t></w:r>
+<m:oMath><m:r><m:t>x &lt; y &amp; z &#x3B1;</m:t></m:r></m:oMath>
+<w:r><w:t> tail</w:t></w:r></w:p><w:p><m:oMathPara><m:oMath>
+<m:r><m:t>x &lt; y &amp; z &#x3B1;</m:t></m:r>
+</m:oMath></m:oMathPara></w:p></w:body></w:document>"#;
+
+    #[test]
+    fn inline_equations_preserve_entities_and_surrounding_text() {
+        let paragraphs = parse_inline_equation_xml(ENTITY_DOCUMENT).unwrap();
+        let content = &paragraphs[&1];
+        assert!(
+            matches!(&content[0], ParagraphContent::Text(text) if text == "before & < α after ")
+        );
+        assert!(
+            matches!(&content[1], ParagraphContent::InlineEquation { latex, fallback }
+            if latex == "x < y & z \\alpha " && fallback == "x < y & z α")
+        );
+        assert!(matches!(&content[2], ParagraphContent::Text(text) if text == " tail"));
+    }
+
+    #[test]
+    fn inline_and_display_equations_preserve_entities() {
+        let equations = parse_equation_xml(ENTITY_DOCUMENT).unwrap();
+        assert_eq!(equations.len(), 2);
+        assert!(equations[0].is_inline);
+        assert!(!equations[1].is_inline);
+        for equation in equations {
+            assert_eq!(equation.latex, "x < y & z \\alpha ");
+            assert_eq!(equation.fallback, "x < y & z α");
+        }
+    }
 }

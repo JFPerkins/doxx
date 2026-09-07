@@ -151,7 +151,10 @@ impl TerminalImageRenderer {
                     _ => {}
                 }
 
-                match viuer::print_from_file(&display_path, &conf) {
+                let result = image::open(&display_path)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|image| viuer::print(&image, &conf).map_err(anyhow::Error::from));
+                match result {
                     Ok(_) => {
                         // Print description after the image
                         if !description.is_empty() {
@@ -198,14 +201,11 @@ impl TerminalImageRenderer {
                     _ => {}
                 }
 
-                // Create a temporary file for viuer (it needs a file path)
-                let temp_path = std::env::temp_dir().join("doxx_temp_image.png");
-                std::fs::write(&temp_path, image_data)?;
-
-                match viuer::print_from_file(&temp_path, &conf) {
+                let result = image::load_from_memory(image_data)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|image| viuer::print(&image, &conf).map_err(anyhow::Error::from));
+                match result {
                     Ok(_) => {
-                        // Clean up temp file
-                        let _ = std::fs::remove_file(&temp_path);
                         if !description.is_empty() {
                             println!("📷 {description}");
                         }

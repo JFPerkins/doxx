@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Update XML parsing, terminal UI, and transitive dependencies to resolve known advisories; exclude unused image codecs that depend on unmaintained `paste`.
+- Decode terminal images in memory instead of using a shared temporary filename.
+
 ### Added
 - Document comments sidebar with `--comments`, Shift+C, and configurable `toggle_comments` shortcuts.
 

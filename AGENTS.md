@@ -37,8 +37,8 @@ src/
 ## Key Dependencies
 
 - docx-rs (0.4): .docx parsing — no built-in OMML support; we parse equation XML directly
-- ratatui (0.29) + crossterm (0.27): TUI
-- ratatui-image (8.0): Kitty/iTerm2/half-block image rendering
+- ratatui (0.30) + crossterm (0.29): TUI
+- ratatui-image (11.0): Kitty/iTerm2/half-block image rendering
 - tokio (1.0): Async runtime
 - clap (4.4): CLI
 
