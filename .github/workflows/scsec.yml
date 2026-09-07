@@ -1,0 +1,21 @@
+# Created by scsec. Review changes before committing.
+name: Supply chain security
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - name: Check dependencies
+        uses: google/osv-scanner-action/osv-scanner-action@8deb546fdb875b9996d27d4950be7312dac076a1
+        with:
+          scan-args: |-
+            --recursive
+            --no-call-analysis=go
+            .
